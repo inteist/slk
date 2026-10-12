@@ -402,6 +402,36 @@ func TestUpsertReplacesByIDAndPreservesLastVisited(t *testing.T) {
 	}
 }
 
+func TestUpsertKeepsNewestLastVisited(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		incoming int64
+		want     int64
+	}{
+		{"missing visit", 0, 500},
+		{"stale workspace visit", 10, 500},
+		{"same visit", 500, 500},
+		{"newer incoming visit", 600, 600},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New()
+			m.SetItems([]core.ChannelFinderItem{
+				{ID: "D1", Name: "U1", Type: "dm", Joined: true, LastVisited: 10},
+				{ID: "D2", Name: "Bob", Type: "dm", Joined: true, LastVisited: 100},
+			})
+			m.Open()
+			m.UpdateLastVisited("D1", 500)
+
+			m.Upsert(core.ChannelFinderItem{ID: "D1", Name: "Alice", Type: "dm", Joined: true, LastVisited: tc.incoming})
+
+			got := m.FilteredItems()
+			if len(got) != 2 || got[0].ID != "D1" || got[0].Name != "Alice" || got[0].LastVisited != tc.want {
+				t.Fatalf("items after repair = %+v, want Alice first with LastVisited %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestUpsertConvertsBrowseableEntryInPlace(t *testing.T) {
 	m := New()
 	m.SetBrowseable([]core.ChannelFinderItem{{ID: "C9", Name: "announcements", Type: "channel", Joined: false}})
