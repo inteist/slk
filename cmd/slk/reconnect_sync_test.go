@@ -12,9 +12,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/gammons/slk/internal/cache"
+	"github.com/gammons/slk/internal/service"
 	slackclient "github.com/gammons/slk/internal/slack"
 	"github.com/gammons/slk/internal/slack/membership"
 	"github.com/gammons/slk/internal/ui"
+	"github.com/slack-go/slack"
 )
 
 // captureSender records every tea.Msg dispatched to it. Substituted
@@ -42,6 +44,103 @@ func newTestDB(t *testing.T) *cache.DB {
 		t.Fatalf("UpsertWorkspace: %v", err)
 	}
 	return db
+}
+
+func TestOnConnect_SectionReconciliationRequiresRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		bootstrapped  bool
+		sectionsBody  string
+		wantFetches   int
+		wantReconcile int
+	}{
+		{name: "recent bootstrap", bootstrapped: true},
+		{name: "actual refresh", wantFetches: 1, wantReconcile: 1},
+		{name: "failed refresh retries", sectionsBody: `{"ok":false,"error":"not_authed"}`, wantFetches: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sectionsBody := tc.sectionsBody
+			if sectionsBody == "" {
+				sectionsBody = `{"ok":true,"channel_sections":[{"channel_section_id":"ST","type":"stars","channel_ids_page":{"channel_ids":[],"count":0}}]}`
+			}
+			srv := newFakeSlack(t, map[string]string{
+				"/api/users.channelSections.list": sectionsBody,
+				"/api/stars.list":                 `{"ok":true,"items":[{"type":"im","channel":"D1"}]}`,
+				"/api/users.getPresence":          `{"ok":false,"error":"not_authed"}`,
+				"/api/dnd.info":                   `{"ok":false,"error":"not_authed"}`,
+			})
+			store := service.NewSectionStore()
+			if tc.bootstrapped {
+				if err := store.Bootstrap(context.Background(), &fakeSectionsClient{
+					sections: []slackclient.SidebarSection{{ID: "ST", Type: "stars"}},
+					starIDs:  []string{"D1"},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sender := &captureSender{}
+			h := &rtmEventHandler{
+				connected:   true,
+				workspaceID: "T1",
+				wsCtx:       &WorkspaceContext{TeamID: "T1", Client: newTestClient(t, srv.Server), SectionStore: store},
+				program:     sender,
+			}
+			reconciliations := 0
+			h.resolveConversation = func(ctx context.Context, id string) (*slack.Channel, error) {
+				if id != "D1" {
+					t.Errorf("resolved conversation %q, want D1", id)
+				}
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("reconciliation context has no deadline")
+				}
+				reconciliations++
+				return nil, errors.New("metadata temporarily unavailable")
+			}
+			sectionRefreshes := 0
+			for attempt := 1; attempt <= 2; attempt++ {
+				h.OnConnect()
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					statuses := 0
+					sectionRefreshes = 0
+					sender.mu.Lock()
+					for _, msg := range sender.sent {
+						switch msg.(type) {
+						case ui.StatusChangeMsg:
+							statuses++
+						case ui.SectionsRefreshedMsg:
+							sectionRefreshes++
+						}
+					}
+					sender.mu.Unlock()
+					if statuses == attempt {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("presence bootstrap completed %d times, want %d", statuses, attempt)
+					}
+					time.Sleep(time.Millisecond)
+				}
+			}
+			if reconciliations != tc.wantReconcile || sectionRefreshes != tc.wantReconcile {
+				t.Errorf("reconciliations=%d section refreshes=%d, want %d each", reconciliations, sectionRefreshes, tc.wantReconcile)
+			}
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			fetches, stars := 0, 0
+			for _, req := range srv.reqs {
+				switch req.path {
+				case "/api/users.channelSections.list":
+					fetches++
+				case "/api/stars.list":
+					stars++
+				}
+			}
+			if fetches != tc.wantFetches || stars != tc.wantReconcile {
+				t.Errorf("section fetches=%d stars fetches=%d, want %d and %d", fetches, stars, tc.wantFetches, tc.wantReconcile)
+			}
+		})
+	}
 }
 
 func TestReconnect_DedupeWindow(t *testing.T) {

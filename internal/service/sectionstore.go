@@ -386,12 +386,15 @@ func (s *SectionStore) ApplyChannelsRemoved(sectionID string, channelIDs []strin
 // MaybeRebootstrap re-runs Bootstrap when the previous successful one was
 // more than 30 seconds ago. Cheap insurance against missed events during
 // disconnects without thundering during a flapping connection.
-func (s *SectionStore) MaybeRebootstrap(ctx context.Context, client SectionsClient) error {
+func (s *SectionStore) MaybeRebootstrap(ctx context.Context, client SectionsClient) (bool, error) {
 	s.mu.RLock()
 	last := s.lastBootstrap
 	s.mu.RUnlock()
 	if !last.IsZero() && time.Since(last) < 30*time.Second {
-		return nil
+		return false, nil
 	}
-	return s.Bootstrap(ctx, client)
+	if err := s.Bootstrap(ctx, client); err != nil {
+		return false, err
+	}
+	return true, nil
 }

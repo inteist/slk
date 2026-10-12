@@ -488,9 +488,9 @@ func (h *rtmEventHandler) OnConnect() {
 		// Bound section refresh and missing-row hydration together so a slow
 		// workspace cannot indefinitely stall serialized WebSocket delivery.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := h.wsCtx.SectionStore.MaybeRebootstrap(ctx, h.wsCtx.Client); err != nil {
+		if refreshed, err := h.wsCtx.SectionStore.MaybeRebootstrap(ctx, h.wsCtx.Client); err != nil {
 			log.Printf("section store rebootstrap for %s failed: %v", h.wsCtx.TeamName, err)
-		} else {
+		} else if refreshed {
 			h.reconcileStarredConversations(ctx)
 			h.refreshSectionsForActive()
 		}

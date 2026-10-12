@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	slk "github.com/gammons/slk/internal/slack"
 )
@@ -454,9 +456,79 @@ func TestMaybeRebootstrap_DebouncedWithin30s(t *testing.T) {
 		{ID: "B", Type: "standard", Next: "", LastUpdate: 200},
 	}}
 	wrap := &countingClient{inner: c2, onCall: func() { calledAgain = true }}
-	store.MaybeRebootstrap(context.Background(), wrap)
+	refreshed, err := store.MaybeRebootstrap(context.Background(), wrap)
+	if refreshed || err != nil {
+		t.Fatalf("MaybeRebootstrap = (%v, %v), want (false, nil)", refreshed, err)
+	}
 	if calledAgain {
 		t.Errorf("MaybeRebootstrap should be debounced within 30s")
+	}
+}
+
+func TestMaybeRebootstrap_ReportsActualRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		last      time.Time
+		starsFail bool
+	}{
+		{name: "never bootstrapped"},
+		{name: "expired bootstrap", last: time.Now().Add(-31 * time.Second)},
+		{name: "stars best effort", starsFail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewSectionStore()
+			store.lastBootstrap = tc.last
+			client := &fakeSectionsClient{sections: []slk.SidebarSection{
+				{ID: "ST", Type: "stars"},
+			}, starIDs: []string{"D1"}}
+			if tc.starsFail {
+				client.starErr = errors.New("stars unavailable")
+			}
+			calls := 0
+			wrap := &countingClient{inner: client, onCall: func() { calls++ }}
+			refreshed, err := store.MaybeRebootstrap(context.Background(), wrap)
+			if !refreshed || err != nil || calls != 1 || !store.Ready() {
+				t.Fatalf("MaybeRebootstrap = (%v, %v), calls=%d ready=%v", refreshed, err, calls, store.Ready())
+			}
+			if !tc.starsFail {
+				if section, ok := store.SectionForChannel("D1"); !ok || section != "ST" {
+					t.Fatalf("starred membership = (%q, %v), want (ST, true)", section, ok)
+				}
+			}
+			refreshed, err = store.MaybeRebootstrap(context.Background(), wrap)
+			if refreshed || err != nil || calls != 1 {
+				t.Fatalf("debounced MaybeRebootstrap = (%v, %v), calls=%d", refreshed, err, calls)
+			}
+		})
+	}
+}
+
+func TestMaybeRebootstrap_FailureDoesNotDebounceRetry(t *testing.T) {
+	store := NewSectionStore()
+	client := &fakeSectionsClient{sections: []slk.SidebarSection{
+		{ID: "A", Type: "standard", ChannelIDs: []string{"C1"}},
+	}}
+	if err := store.Bootstrap(context.Background(), client); err != nil {
+		t.Fatal(err)
+	}
+	last := time.Now().Add(-31 * time.Second)
+	store.lastBootstrap = last
+	fetchErr := errors.New("sections unavailable")
+	client.getErr = fetchErr
+	refreshed, err := store.MaybeRebootstrap(context.Background(), client)
+	if refreshed || !errors.Is(err, fetchErr) {
+		t.Fatalf("MaybeRebootstrap = (%v, %v), want (false, %v)", refreshed, err, fetchErr)
+	}
+	if !store.lastBootstrap.Equal(last) {
+		t.Fatal("failed fetch advanced debounce timestamp")
+	}
+	if section, ok := store.SectionForChannel("C1"); !ok || section != "A" {
+		t.Fatalf("failed fetch changed membership to (%q, %v)", section, ok)
+	}
+	client.getErr = nil
+	refreshed, err = store.MaybeRebootstrap(context.Background(), client)
+	if !refreshed || err != nil {
+		t.Fatalf("retry MaybeRebootstrap = (%v, %v), want (true, nil)", refreshed, err)
 	}
 }
 
