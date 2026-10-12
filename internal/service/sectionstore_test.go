@@ -182,6 +182,19 @@ func TestSectionStore_SectionForChannel_StarsClaimed(t *testing.T) {
 	}
 }
 
+func TestSectionStore_StarredConversationIDsExcludesRedactedSections(t *testing.T) {
+	store := NewSectionStore()
+	if err := store.Bootstrap(context.Background(), &fakeSectionsClient{
+		sections: []slk.SidebarSection{{ID: "ST", Type: "stars", IsRedacted: true}},
+		starIDs:  []string{"D1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.StarredConversationIDs(); len(got) != 0 {
+		t.Fatalf("redacted stars membership = %v, want none", got)
+	}
+}
+
 // Slack's users.channelSections.list returns the stars section with an
 // empty channel_ids array. PopulateStars fills it from stars.list, the
 // authoritative source for starred channels. Without this call, a
