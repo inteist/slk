@@ -61,6 +61,7 @@ func TestMissingStarredConversations_InvalidOrUnavailable(t *testing.T) {
 		{"closed mpim", &slack.Channel{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "D1", IsMpIM: true}, Name: "mpdm-a--b-1"}, IsMember: true}, nil},
 		{"not joined", &slack.Channel{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "D1"}, Name: "not joined"}, IsChannel: true}, nil},
 		{"malformed", &slack.Channel{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "D1"}}}, nil},
+		{"joined without type flags", &slack.Channel{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "D1"}, Name: "unknown"}, IsMember: true}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := missingStarredConversations(context.Background(), nil, []string{"D1"}, nil,
