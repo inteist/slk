@@ -104,6 +104,21 @@ func TestMissingStarredConversations_Cancellation(t *testing.T) {
 	}
 }
 
+func TestMissingStarredConversations_CancellationAfterSuccessfulLookup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	got := missingStarredConversations(ctx, nil, []string{"D1", "D2"}, nil,
+		func(_ context.Context, id string) (*slack.Channel, error) {
+			calls++
+			cancel()
+			return &slack.Channel{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: id, IsIM: true, User: "U1"}}}, nil
+		})
+	if len(got) != 0 || calls != 1 {
+		t.Fatalf("added after cancellation = %+v, calls = %d, want no additions and one call", got, calls)
+	}
+}
+
 func TestMissingStarredConversations_ContinuesAfterFailure(t *testing.T) {
 	var calls []string
 	got := missingStarredConversations(context.Background(), nil, []string{"missing", "C1", "D1"}, []boot.IM{{ID: "D1"}},
